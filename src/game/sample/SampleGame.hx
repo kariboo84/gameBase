@@ -7,6 +7,7 @@ package sample;
 class SampleGame extends Game {
 	var heroes : Array<SamplePlayer> = [];
 	var joinAccesses : Array<ControllerAccess<GameAction>> = [];
+	var fixedFrameCount = 0;
 
 	public function new() {
 		super();
@@ -47,6 +48,18 @@ class SampleGame extends Game {
 		for(p in App.ME.players)
 			if( !hasJoined(p) && joinAccesses[p.index].isPressed(Jump) )
 				spawnPlayer(p);
+	}
+
+	override function fixedUpdate() {
+		super.fixedUpdate();
+		fixedFrameCount++;
+		if( destroyed )
+			return;
+
+		// Players standing on other players follow them, once everyone has moved
+		for(h in heroes)
+			if( !h.destroyed )
+				h.applyCarry(fixedFrameCount);
 	}
 
 	override function onDispose() {

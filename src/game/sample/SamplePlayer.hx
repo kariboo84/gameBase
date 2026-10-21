@@ -13,9 +13,17 @@ class SamplePlayer extends Entity {
 	var ca : ControllerAccess<GameAction>;
 	var walkSpeed = 0.;
 
-	// This is TRUE if the player is not falling
+	/** Other player this one is standing on (and carried by), if any **/
+	var carrier : Null<SamplePlayer>;
+	var carryDoneFrame = -1;
+
+	// This is TRUE if the player is not falling (standing on the level or on another player's head)
 	var onGround(get,never) : Bool;
-		inline function get_onGround() return !destroyed && vBase.dy==0 && yr==1 && level.hasCollision(cx,cy+1);
+		inline function get_onGround() return !destroyed && ( isCarried() || vBase.dy==0 && yr==1 && level.hasCollision(cx,cy+1) );
+
+	/** Y coordinate (pixels) of the top of the head **/
+	public var headY(get,never) : Float;
+		inline function get_headY() return attachY - hei;
 
 
 	public function new(player:PlayerInput) {
@@ -57,6 +65,7 @@ class SamplePlayer extends Entity {
 
 	override function dispose() {
 		super.dispose();
+		carrier = null;
 		ca.dispose(); // don't forget to dispose controller accesses
 	}
 
@@ -75,9 +84,121 @@ class SamplePlayer extends Entity {
 	}
 
 
+	public inline function isCarried() {
+		return carrier!=null;
+	}
+
+
+	/** TRUE if both players horizontally overlap enough to stand on each other **/
+	inline function overlapsX(other:SamplePlayer) {
+		return M.fabs(attachX-other.attachX) < (wid+other.wid)*0.5 - 2;
+	}
+
+
+	/** TRUE if `other` is carried by this player, directly or through a stack **/
+	function isCarrying(other:SamplePlayer) {
+		var e = other.carrier;
+		while( e!=null ) {
+			if( e==this )
+				return true;
+			e = e.carrier;
+		}
+		return false;
+	}
+
+
+	/** Return the player whose head we just reached while falling, if any **/
+	function findHeadToLandOn() : Null<SamplePlayer> {
+		for(e in Entity.ALL) {
+			var other = Std.downcast(e, SamplePlayer);
+			if( other==null || other==this || other.destroyed || isCarrying(other) )
+				continue;
+
+			var wasAboveHead = lastFixedUpdateY <= other.headY + 0.5;
+			var reachedHead = attachY >= other.headY;
+			if( overlapsX(other) && wasAboveHead && reachedHead )
+				return other;
+		}
+		return null;
+	}
+
+
+	function startCarriedBy(other:SamplePlayer) {
+		carrier = other;
+		vBase.clearY();
+		vBump.clearY();
+		setFeetY(other.headY);
+		setSquashY(0.6);
+		ca.rumble(0.1, 0.06);
+	}
+
+
+	function stopCarried() {
+		carrier = null;
+	}
+
+
+	/** Put feet at given Y pixel coordinate, without collision checks **/
+	function setFeetY(y:Float) {
+		cy = Std.int(y/Const.GRID);
+		yr = (y - cy*Const.GRID) / Const.GRID;
+	}
+
+
+	/**
+		Follow the carrier movement. Called by SampleGame after ALL entities fixedUpdate, so that the carrier position for this tick is final.
+		The rider position before this call was already recorded by `updateLastFixedUpdatePos()`, so the carry movement is smoothly interpolated.
+	**/
+	public function applyCarry(fixedFrame:Int) {
+		if( carryDoneFrame==fixedFrame )
+			return;
+		carryDoneFrame = fixedFrame;
+
+		if( !isCarried() )
+			return;
+
+		// Stacks: move the carrier first
+		carrier.applyCarry(fixedFrame);
+
+		// Jumped, walked off or carrier gone
+		if( carrier.destroyed || vBase.dy<0 || !overlapsX(carrier) ) {
+			stopCarried();
+			return;
+		}
+
+		// Horizontal: move along with the carrier, blocked by walls
+		xr += ( carrier.attachX - carrier.lastFixedUpdateX ) / Const.GRID;
+		while( xr>1 ) { xr--; cx++; }
+		while( xr<0 ) { xr++; cx--; }
+		if( xr>0.8 && level.hasCollision(cx+1,cy) )
+			xr = 0.8;
+		if( xr<0.2 && level.hasCollision(cx-1,cy) )
+			xr = 0.2;
+
+		// Vertical: stay on the head, unless the head moves into a ceiling
+		var feetY = carrier.headY;
+		var headCy = Std.int( (feetY-hei) / Const.GRID );
+		if( level.hasCollision(cx, headCy) ) {
+			stopCarried();
+			return;
+		}
+		setFeetY(feetY);
+		vBase.clearY();
+	}
+
+
 	/** Y collisions **/
 	override function onPreStepY() {
 		super.onPreStepY();
+
+		// Land on another player's head
+		if( !isCarried() && dyTotal>0 ) {
+			var other = findHeadToLandOn();
+			if( other!=null ) {
+				startCarriedBy(other);
+				return;
+			}
+		}
 
 		// Land on ground
 		if( yr>1 && level.hasCollision(cx,cy+1) ) {
