@@ -111,8 +111,9 @@ class SplitScreen extends h2d.Drawable {
 		var ellipseDists = [];
 		var maxEllipseDist = 0.;
 		for(e in live) {
-			var x = e.centerX*scroller.scaleX + scroller.x - screenW*0.5;
-			var y = e.centerY*scroller.scaleY + scroller.y - screenH*0.5;
+			// Use the rendered (interpolated) sprite position, not the physics one: otherwise the target jitters in its own view
+			var x = e.sprX*scroller.scaleX + scroller.x - screenW*0.5;
+			var y = (e.sprY - e.hei*0.5)*scroller.scaleY + scroller.y - screenH*0.5;
 			var dist = ellipseDist(x, y, screenW*0.5*splitRadiusRatio, screenH*0.5*splitRadiusRatio);
 			relX.push(x);
 			relY.push(y);
