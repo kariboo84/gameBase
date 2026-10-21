@@ -1,42 +1,59 @@
 /**
-	Dynamic split-screen for local multiplayer ("DBZ" / Voronoi style).
+	Split-screen for local multiplayer.
 
-	- While every target stays close to the group center, all views are identical: a single shared screen is displayed.
-	- When targets move apart, the screen is cut in EQUAL pie slices meeting at the screen center: one slice per target, ordered by angle,
-	  rotated to best match the targets directions. With 2 targets, the cut is a straight line perpendicular to the direction between them.
-	- Each target stays on an ellipse around the screen center, progressively moved to the middle of its slice, so the transition from shared to split screen is seamless.
-	- For this to work, the main camera should keep the group center at the screen center: disable level bounds clamping while several targets are tracked.
+	- While every target is visible on the shared screen (ie. close enough to the group center), a single screen is displayed.
+	- 2 targets: "DBZ" dynamic split. The screen is cut by a line through its center, perpendicular to the direction between the targets.
+	  Each target stays on its own side. The transition from shared to split screen is seamless, and the line rotation is smoothed.
+	- 3+ targets: fixed areas (3: two on top + one at the bottom, 4: quarters). Each target always keeps the same area. Shared/split transitions are short fades, with a hysteresis to avoid flickering.
 
-	The game scroller is rendered once per view into an offscreen texture (same pixel-perfect scale), then a shader composes the final image and draws the separator lines.
-	The main `Camera` should track the same group (`camera.trackGroup(...)`).
+	The game scroller is rendered once per view into an offscreen texture (same pixel-perfect scale), then a shader composes the final image and draws the separators.
+	The main `Camera` should track the same group (`camera.trackGroup(...)`), WITHOUT level bounds clamping, so that the group center stays at the screen center.
 **/
 class SplitScreen extends h2d.Drawable {
 	public static inline var MAX_VIEWS = 4;
 
 	var scroller : h2d.Object;
 	var targets : Array<Entity> = [];
+	var targetColors : Array<Col> = [];
 	var textures : Array<h3d.mat.Texture> = [];
 	var viewOffsetsX : Array<Float> = [];
 	var viewOffsetsY : Array<Float> = [];
 	var viewCam : h2d.Camera;
 	var compositeShader : SplitScreenShader;
 
-	/** Split starts when a target leaves this ellipse around the group center (ratio of the screen half width/height) **/
-	public var splitRadiusRatio = 0.55;
+	/** Split happens when a target leaves this ellipse around the screen center (ratio of the screen half width/height) **/
+	public var splitRadiusRatio = 0.85;
 
-	/** Distance (ratio of the ellipse) over which the separator line fades in **/
+	/** 2 targets: once split, each target is moved to this distance from the screen center (ratio of the screen half width/height) **/
+	public var dynamicHoldRatio = 0.5;
+
+	/** 2 targets: overshoot of the split ellipse (ratio) over which the targets reach their final position in their half **/
+	public var dynamicPlacementRatio = 0.35;
+
+	/** 2 targets: overshoot of the split ellipse (ratio) over which the separator line fades in **/
 	public var lineFadeRatio = 0.12;
 
+	/** 2 targets: separator rotation smoothing (0-1, per 60fps frame) **/
+	public var rotationSmoothing = 0.12;
+
+	/** 3+ targets: shared screen comes back when every target is inside this ellipse (ratio of the screen half width/height) **/
+	public var fixedMergeRatio = 0.7;
+
+	/** 3+ targets: fade duration between shared and split screen, in seconds **/
+	public var fixedFadeS = 0.25;
+
 	public var lineColor : Col = White;
+
 	/** Inner edges of the separator, when a target has no specific color **/
 	public var borderColor : Col = Black;
 	public var borderAlpha = 0.85;
 
-	/** Per target color of the separator inner edges, on the target side **/
-	var targetColors : Array<Col> = [];
-
-	/** TRUE when the screen is currently split **/
+	/** TRUE when the screen is currently (even partially) split **/
 	public var isSplit(default,null) = false;
+
+	var smoothedAngle : Null<Float>;
+	var fixedSplit = false;
+	var fixedFade = 0.;
 
 
 	public function new(scroller:h2d.Object, ?parent:h2d.Object) {
@@ -48,15 +65,10 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
-	/** Entities that each get their own view when split (max `MAX_VIEWS`) **/
+	/** Entities that each get their own view when split (max `MAX_VIEWS`). Optional colors are used for the separator inner edges. **/
 	public function setTargets(entities:Array<Entity>, ?colors:Array<Col>) {
 		targets = entities.slice(0, MAX_VIEWS);
 		targetColors = colors==null ? [] : colors.slice(0, MAX_VIEWS);
-	}
-
-
-	function getLiveTargets() : Array<Entity> {
-		return targets.filter( e->e.isAlive() );
 	}
 
 
@@ -71,122 +83,163 @@ class SplitScreen extends h2d.Drawable {
 
 	override function sync(ctx:h2d.RenderContext) {
 		super.sync(ctx);
-		updateViews();
+		updateViews(ctx.elapsedTime);
 	}
 
 
-	/** Compute views offsets, slices and separator lines for current frame **/
-	function updateViews() {
-		var live = getLiveTargets();
-		var liveColors = [ for(i in 0...targets.length) if( targets[i].isAlive() ) i<targetColors.length ? targetColors[i] : borderColor ];
+	/** Compute views offsets and separators for current frame **/
+	function updateViews(elapsedS:Float) {
 		var scene = getScene();
+		var live = [];
+		var liveColors = [];
+		for(i in 0...targets.length)
+			if( targets[i].isAlive() ) {
+				live.push(targets[i]);
+				liveColors.push( i<targetColors.length ? targetColors[i] : borderColor );
+			}
+
 		if( live.length<2 || scene==null ) {
-			setSplit(false);
+			resetSplit();
 			return;
 		}
 
+		// Targets positions on the shared screen, relative to its center
 		var screenW = scene.width;
 		var screenH = scene.height;
-		var scale = scroller.scaleX;
-		var count = live.length;
-
-		// Slices always meet at the screen center, so they all get the same area
-		var centerX = screenW*0.5;
-		var centerY = screenH*0.5;
-
-		// Targets positions on the shared view, relative to screen center
-		var radiusX = screenW*0.5*splitRadiusRatio;
-		var radiusY = screenH*0.5*splitRadiusRatio;
-		var maxEllipseDist = 0.;
 		var relX = [];
 		var relY = [];
 		var ellipseDists = [];
-		var angles = [];
+		var maxEllipseDist = 0.;
 		for(e in live) {
-			var x = e.centerX*scale + scroller.x - centerX;
-			var y = e.centerY*scale + scroller.y - centerY;
-			var dist = Math.sqrt( (x/radiusX)*(x/radiusX) + (y/radiusY)*(y/radiusY) );
+			var x = e.centerX*scroller.scaleX + scroller.x - screenW*0.5;
+			var y = e.centerY*scroller.scaleY + scroller.y - screenH*0.5;
+			var dist = ellipseDist(x, y, screenW*0.5*splitRadiusRatio, screenH*0.5*splitRadiusRatio);
 			relX.push(x);
 			relY.push(y);
 			ellipseDists.push(dist);
-			angles.push( Math.atan2(y,x) );
 			maxEllipseDist = M.fmax(maxEllipseDist, dist);
 		}
 
-		setSplit( maxEllipseDist>1 );
+		if( live.length==2 )
+			updateDynamicSplit(screenW, screenH, relX, relY, ellipseDists, maxEllipseDist, elapsedS);
+		else
+			updateFixedSplit(screenW, screenH, relX, relY, maxEllipseDist, elapsedS);
+
+		setShaderCommons(screenW, screenH, live.length, liveColors);
+	}
+
+
+	/** 2 targets: rotating line through the screen center **/
+	function updateDynamicSplit(screenW:Float, screenH:Float, relX:Array<Float>, relY:Array<Float>, ellipseDists:Array<Float>, maxEllipseDist:Float, elapsedS:Float) {
+		fixedSplit = false;
+		fixedFade = 0;
+
+		isSplit = maxEllipseDist>1;
+		scroller.visible = !isSplit;
+		if( !isSplit ) {
+			smoothedAngle = null;
+			return;
+		}
+
+		// Direction from target 1 to target 0, smoothed
+		var rawAngle = Math.atan2(relY[0]-relY[1], relX[0]-relX[1]);
+		if( smoothedAngle==null )
+			smoothedAngle = rawAngle;
+		else {
+			var ratio = 1 - Math.pow(1-rotationSmoothing, elapsedS*60);
+			smoothedAngle += M.radSubstract(rawAngle, smoothedAngle) * ratio;
+		}
+
+		// Targets go progressively from their shared screen position to the middle of their half
+		var placement = M.fclamp( (maxEllipseDist-1)/dynamicPlacementRatio, 0, 1 );
+		viewOffsetsX = [];
+		viewOffsetsY = [];
+		for(i in 0...2) {
+			var halfMiddle = smoothedAngle + (i==0 ? 0 : M.PI);
+			var ang = Math.atan2(relY[i], relX[i]);
+			ang += M.radSubstract(halfMiddle, ang) * placement;
+
+			var keep = ellipseDists[i]>1 ? 1/ellipseDists[i] : 1.;
+			var sharedDist = Math.sqrt(relX[i]*relX[i] + relY[i]*relY[i]) * keep;
+			var holdDist = ellipseRadius(ang, screenW*0.5*dynamicHoldRatio, screenH*0.5*dynamicHoldRatio);
+			var dist = M.lerp(sharedDist, holdDist, placement);
+
+			viewOffsetsX.push( M.round(relX[i] - Math.cos(ang)*dist) );
+			viewOffsetsY.push( M.round(relY[i] - Math.sin(ang)*dist) );
+		}
+
+		// Half 0 spans [startAngle, startAngle+PI[ and contains target 0 direction
+		var s = compositeShader;
+		s.mode = 0;
+		s.startAngle = smoothedAngle - M.PI*0.5;
+		s.lineAlpha = M.fclamp( (maxEllipseDist-1)/lineFadeRatio, 0, 1 );
+		s.globalAlpha = 1;
+	}
+
+
+	/** 3+ targets: fixed areas, with hysteresis and fades **/
+	function updateFixedSplit(screenW:Float, screenH:Float, relX:Array<Float>, relY:Array<Float>, maxEllipseDist:Float, elapsedS:Float) {
+		smoothedAngle = null;
+
+		if( !fixedSplit && maxEllipseDist>1 )
+			fixedSplit = true;
+		else if( fixedSplit && maxEllipseDist<fixedMergeRatio/splitRadiusRatio )
+			fixedSplit = false;
+
+		var fadeStep = fixedFadeS<=0 ? 1 : elapsedS/fixedFadeS;
+		fixedFade = M.fclamp( fixedFade + (fixedSplit ? fadeStep : -fadeStep), 0, 1 );
+
+		isSplit = fixedFade>0;
+		scroller.visible = fixedFade<1; // shared screen stays visible below the fading split screen
 		if( !isSplit )
 			return;
 
-		// Equal slices (360/count each). Only their rotation and their attribution are chosen,
-		// to keep the targets order around the center and to best match their directions.
-		var sliceAng = M.PI2 / count;
-		var order = [ for(i in 0...count) i ];
-		order.sort( (a,b)->Reflect.compare(angles[a], angles[b]) );
-
-		var bestShift = 0;
-		var bestRotation = 0.;
-		var bestError = 1e9;
-		for(shift in 0...count) {
-			// Optimal rotation for this attribution: circular mean of the angular differences
-			var sumCos = 0.;
-			var sumSin = 0.;
-			for(k in 0...count) {
-				var a = angles[ order[(k+shift) % count] ] - (k+0.5)*sliceAng;
-				sumCos += Math.cos(a);
-				sumSin += Math.sin(a);
-			}
-			var rotation = Math.atan2(sumSin, sumCos);
-			var error = 0.;
-			for(k in 0...count) {
-				var diff = M.radSubstract( angles[ order[(k+shift) % count] ], rotation + (k+0.5)*sliceAng );
-				error += diff*diff;
-			}
-			if( error<bestError ) {
-				bestError = error;
-				bestShift = shift;
-				bestRotation = rotation;
-			}
-		}
-
-		// Slice middle angle of each target
-		var sliceMiddle = [ for(i in 0...count) 0. ];
-		var sectorView = [ for(k in 0...MAX_VIEWS) 0 ];
-		for(k in 0...count) {
-			var target = order[(k+bestShift) % count];
-			sliceMiddle[target] = bestRotation + (k+0.5)*sliceAng;
-			sectorView[k] = target;
-		}
-
-		// View offsets: each target is kept on its ellipse, progressively moved toward the middle of its slice
-		var splitRatio = M.fclamp( (maxEllipseDist-1)/lineFadeRatio, 0, 1 );
+		// Each target is centered in its own area
+		var count = relX.length;
 		viewOffsetsX = [];
 		viewOffsetsY = [];
 		for(i in 0...count) {
-			var keep = ellipseDists[i]>1 ? 1/ellipseDists[i] : 1.;
-			var dist = Math.sqrt(relX[i]*relX[i] + relY[i]*relY[i]) * keep;
-			var ang = angles[i] + M.radSubstract(sliceMiddle[i], angles[i]) * splitRatio;
-			var wantedX = Math.cos(ang) * dist;
-			var wantedY = Math.sin(ang) * dist;
-			viewOffsetsX.push( M.round(relX[i] - wantedX) );
-			viewOffsetsY.push( M.round(relY[i] - wantedY) );
+			var area = getFixedArea(i, count, screenW, screenH);
+			var areaCenterX = area.x + area.w*0.5 - screenW*0.5;
+			var areaCenterY = area.y + area.h*0.5 - screenH*0.5;
+			viewOffsetsX.push( M.round(relX[i] - areaCenterX) );
+			viewOffsetsY.push( M.round(relY[i] - areaCenterY) );
 		}
 
-		// Shader params: slice k starts at rotation + k*sliceAng
 		var s = compositeShader;
+		s.mode = 1;
+		s.lineAlpha = 1;
+		s.globalAlpha = fixedFade;
+	}
+
+
+	/** Fixed screen area of a target: 3 targets = two on top + one at the bottom, 4 targets = quarters **/
+	public static function getFixedArea(index:Int, count:Int, screenW:Float, screenH:Float) {
+		var halfW = screenW*0.5;
+		var halfH = screenH*0.5;
+		if( count==3 && index==2 )
+			return { x:0., y:halfH, w:screenW, h:halfH };
+		return {
+			x: (index%2) * halfW,
+			y: Std.int(index/2) * halfH,
+			w: halfW,
+			h: halfH,
+		}
+	}
+
+
+	function setShaderCommons(screenW:Float, screenH:Float, count:Int, colors:Array<Col>) {
+		var s = compositeShader;
+		var scale = scroller.scaleX;
 		s.viewCount = count;
 		s.screenSize.set(screenW, screenH);
-		s.center.set(centerX, centerY);
-		s.startAngle = bestRotation;
-		s.bounds.set(sliceAng, sliceAng*2, sliceAng*3);
-		s.sectorViews.set(sectorView[0], sectorView[1], sectorView[2], sectorView[3]);
 
-		// Separator: 1 light game pixel, with a darker game pixel on each side
-		s.lineAlpha = splitRatio;
+		// Separator: 1 light game pixel, with an inner edge of 1 game pixel on each side, using the target color
 		s.lineHalfWidth = scale*0.5;
 		s.borderWidth = scale;
 		s.lineColor.setColor(lineColor);
 		s.borderAlpha = borderAlpha;
-		var edgeColors = [ for(i in 0...MAX_VIEWS) i<liveColors.length ? liveColors[i] : borderColor ];
+		var edgeColors = [ for(i in 0...MAX_VIEWS) i<colors.length ? colors[i] : borderColor ];
 		s.edgeColor0.setColor(edgeColors[0]);
 		s.edgeColor1.setColor(edgeColors[1]);
 		s.edgeColor2.setColor(edgeColors[2]);
@@ -194,19 +247,24 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
-	/** Normalize an angle to [0,2PI[ **/
-	static function positiveAngle(a:Float) : Float {
-		while( a<0 )
-			a += M.PI2;
-		while( a>=M.PI2 )
-			a -= M.PI2;
-		return a;
+	function resetSplit() {
+		isSplit = false;
+		fixedSplit = false;
+		fixedFade = 0;
+		smoothedAngle = null;
+		scroller.visible = true;
 	}
 
 
-	function setSplit(v:Bool) {
-		isSplit = v;
-		scroller.visible = !v;
+	/** Distance of a point to the center, as a ratio of the ellipse radius in its direction **/
+	static inline function ellipseDist(x:Float, y:Float, radiusX:Float, radiusY:Float) {
+		return Math.sqrt( (x/radiusX)*(x/radiusX) + (y/radiusY)*(y/radiusY) );
+	}
+
+
+	/** Radius of an ellipse in given direction **/
+	static inline function ellipseRadius(ang:Float, radiusX:Float, radiusY:Float) {
+		return 1 / ellipseDist(Math.cos(ang), Math.sin(ang), radiusX, radiusY);
 	}
 
 
@@ -231,6 +289,7 @@ class SplitScreen extends h2d.Drawable {
 		var scene = getScene();
 		initTextures(viewOffsetsX.length, scene.width, scene.height);
 
+		var wasVisible = scroller.visible;
 		scroller.visible = true;
 		for(i in 0...textures.length) {
 			ctx.pushTarget(textures[i]);
@@ -249,7 +308,7 @@ class SplitScreen extends h2d.Drawable {
 
 			ctx.popTarget();
 		}
-		scroller.visible = false;
+		scroller.visible = wasVisible;
 	}
 
 
@@ -269,7 +328,7 @@ class SplitScreen extends h2d.Drawable {
 
 
 
-/** Composes split-screen views (pie slices) and draws separator lines **/
+/** Composes split-screen views and draws separators **/
 private class SplitScreenShader extends hxsl.Shader {
 	static var SRC = {
 		@:import h3d.shader.Base2d;
@@ -278,12 +337,12 @@ private class SplitScreenShader extends hxsl.Shader {
 		@param var view2 : Sampler2D;
 		@param var view3 : Sampler2D;
 
+		/** 0 = dynamic line (2 views), 1 = fixed areas (3-4 views) **/
+		@param var mode : Int;
 		@param var viewCount : Int;
 		@param var screenSize : Vec2;
-		@param var center : Vec2;
 		@param var startAngle : Float;
-		@param var bounds : Vec3;
-		@param var sectorViews : Vec4;
+		@param var globalAlpha : Float;
 
 		@param var lineAlpha : Float;
 		@param var lineHalfWidth : Float;
@@ -295,53 +354,50 @@ private class SplitScreenShader extends hxsl.Shader {
 		@param var edgeColor2 : Vec3;
 		@param var edgeColor3 : Vec3;
 
-		/** Distance from point `d` (relative to center) to the half-line starting at center with angle `a` **/
-		function rayDist(d:Vec2, a:Float) : Float {
-			var u = vec2(cos(a), sin(a));
-			var along = dot(d, u);
-			var perp = abs(d.x*u.y - d.y*u.x);
-			var dist = length(d);
-			if( along>0 )
-				dist = perp;
-			return dist;
-		}
-
 		function fragment() {
 			var p = calculatedUV * screenSize;
-			var d = p - center;
-			var twoPi = 6.28318530718;
-			var rel = mod( atan(d.y, d.x) - startAngle + twoPi*2, twoPi );
+			var half = screenSize * 0.5;
+			var view = 0.;
+			var dist = 0.;
 
-			// Sector (pie slice) of this pixel, and the view it displays
-			var view = sectorViews.x;
-			if( viewCount>1 && rel>=bounds.x ) view = sectorViews.y;
-			if( viewCount>2 && rel>=bounds.y ) view = sectorViews.z;
-			if( viewCount>3 && rel>=bounds.z ) view = sectorViews.w;
+			if( mode==0 ) {
+				// Line through the screen center
+				var d = p - half;
+				var normal = vec2( cos(startAngle+1.57079632679), sin(startAngle+1.57079632679) );
+				var side = dot(d, normal);
+				if( side<0 ) view = 1.;
+				dist = abs(side);
+			}
+			else {
+				// Fixed areas
+				var right = p.x>=half.x;
+				var bottom = p.y>=half.y;
+				if( viewCount==3 ) {
+					if( bottom ) view = 2.;
+					else if( right ) view = 1.;
+					dist = abs(p.y-half.y);
+					if( !bottom ) dist = min(dist, abs(p.x-half.x));
+				}
+				else {
+					if( right ) view += 1.;
+					if( bottom ) view += 2.;
+					dist = min( abs(p.y-half.y), abs(p.x-half.x) );
+				}
+			}
 
 			var col = textureColor;
-			if( view>0.5 && view<1.5 ) col = view1.get(calculatedUV);
-			if( view>1.5 && view<2.5 ) col = view2.get(calculatedUV);
-			if( view>2.5 ) col = view3.get(calculatedUV);
+			var edge = edgeColor0;
+			if( view>0.5 && view<1.5 ) { col = view1.get(calculatedUV); edge = edgeColor1; }
+			if( view>1.5 && view<2.5 ) { col = view2.get(calculatedUV); edge = edgeColor2; }
+			if( view>2.5 ) { col = view3.get(calculatedUV); edge = edgeColor3; }
 
-			// Separator lines
-			var dist = rayDist(d, startAngle);
-			if( viewCount>1 ) dist = min(dist, rayDist(d, startAngle+bounds.x));
-			if( viewCount>2 ) dist = min(dist, rayDist(d, startAngle+bounds.y));
-			if( viewCount>3 ) dist = min(dist, rayDist(d, startAngle+bounds.z));
-
+			// Separator: light center line, inner edges with the color of the target displayed on this side
 			if( dist<lineHalfWidth )
 				col.rgb = mix(col.rgb, lineColor, lineAlpha);
 			else if( dist<lineHalfWidth+borderWidth )
-			{
-				// Inner edge: color of the target displayed on this side
-				var edge = edgeColor0;
-				if( view>0.5 && view<1.5 ) edge = edgeColor1;
-				if( view>1.5 && view<2.5 ) edge = edgeColor2;
-				if( view>2.5 ) edge = edgeColor3;
 				col.rgb = mix(col.rgb, edge, borderAlpha*lineAlpha);
-			}
 
-			pixelColor = vec4(col.rgb, 1);
+			pixelColor = vec4(col.rgb, globalAlpha);
 		}
 	};
 }
