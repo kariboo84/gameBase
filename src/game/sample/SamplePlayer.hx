@@ -13,6 +13,9 @@ class SamplePlayer extends Entity {
 	var ca : ControllerAccess<GameAction>;
 	var walkSpeed = 0.;
 
+	/** How much the head may enter a ceiling cell (ratio of a cell), like the margin on the sides **/
+	static inline var CEILING_MARGIN = 0.2;
+
 	/** Other player this one is standing on (and carried by), if any **/
 	var carrier : Null<SamplePlayer>;
 	var carryDoneFrame = -1;
@@ -210,9 +213,15 @@ class SamplePlayer extends Entity {
 			onPosManuallyChangedY();
 		}
 
-		// Ceiling collision
-		if( yr<0.2 && level.hasCollision(cx,cy-1) )
-			yr = 0.2;
+		// Ceiling collision: the head (top of the body) may only enter a solid cell by a small margin
+		if( dyTotal<0 ) {
+			var headCy = M.floor( (attachY - hei + Const.GRID*CEILING_MARGIN) / Const.GRID );
+			if( level.hasCollision(cx, headCy) ) {
+				setFeetY( (headCy+1)*Const.GRID - Const.GRID*CEILING_MARGIN + hei );
+				vBase.clearY();
+				vBump.clearY();
+			}
+		}
 	}
 
 

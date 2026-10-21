@@ -48,6 +48,9 @@ class SplitScreen extends h2d.Drawable {
 	/** 3 targets: margin around the group in the overview quarter (ratio of the quarter size) **/
 	public var overviewMargin = 0.15;
 
+	/** 3 targets: overview zoom and framing smoothing (0-1, per 60fps frame) **/
+	public var overviewSmoothing = 0.08;
+
 	/** 3 targets: inner edges color of the overview quarter **/
 	public var overviewEdgeColor : Col = 0x8c8c8c;
 
@@ -59,6 +62,9 @@ class SplitScreen extends h2d.Drawable {
 	public var isSplit(default,null) = false;
 
 	var smoothedAngle : Null<Float>;
+	var overviewZoom : Null<Float>;
+	var overviewX = 0.;
+	var overviewY = 0.;
 	var fixedSplit = false;
 	var fixedFade = 0.;
 
@@ -218,7 +224,9 @@ class SplitScreen extends h2d.Drawable {
 		}
 
 		if( count==3 )
-			addOverviewView(screenW, screenH, relX, relY);
+			addOverviewView(screenW, screenH, relX, relY, elapsedS);
+		else
+			overviewZoom = null;
 
 		var s = compositeShader;
 		s.mode = 1;
@@ -228,39 +236,64 @@ class SplitScreen extends h2d.Drawable {
 
 
 	/**
-		3 targets: 4th quarter shows the whole group, zoomed out to fit.
-		The zoom keeps an integer game pixel size when possible (pixel perfect).
+		3 targets: 4th quarter shows the whole group, zoomed out to fit, framed inside the level bounds.
+		Zoom and framing move smoothly.
 	**/
-	function addOverviewView(screenW:Float, screenH:Float, relX:Array<Float>, relY:Array<Float>) {
+	function addOverviewView(screenW:Float, screenH:Float, relX:Array<Float>, relY:Array<Float>, elapsedS:Float) {
 		var area = getFixedArea(3, screenW, screenH);
+		var gamePixel = scroller.scaleX;
 
-		// Group bounds, on the shared screen (relative to its center)
-		var left = relX[0], right = relX[0], top = relY[0], bottom = relY[0];
-		for(i in 1...relX.length) {
-			left = M.fmin(left, relX[i]);
-			right = M.fmax(right, relX[i]);
-			top = M.fmin(top, relY[i]);
-			bottom = M.fmax(bottom, relY[i]);
+		// Group bounds, in level pixels
+		var left = 1e9, right = -1e9, top = 1e9, bottom = -1e9;
+		for(i in 0...relX.length) {
+			var x = ( relX[i] + screenW*0.5 - scroller.x ) / gamePixel;
+			var y = ( relY[i] + screenH*0.5 - scroller.y ) / gamePixel;
+			left = M.fmin(left, x);
+			right = M.fmax(right, x);
+			top = M.fmin(top, y);
+			bottom = M.fmax(bottom, y);
 		}
-		var boundsW = M.fmax(right-left, 1);
-		var boundsH = M.fmax(bottom-top, 1);
 
-		// Zoom out to fit the bounds (with margins) in the quarter, never zoom in
+		// Zoom out to fit the group (with margins), never zoom in, and never zoom out further than the whole level
 		var usableW = area.w * (1-overviewMargin*2);
 		var usableH = area.h * (1-overviewMargin*2);
-		var zoom = M.fmin( 1, M.fmin(usableW/boundsW, usableH/boundsH) );
-		var gamePixel = scroller.scaleX;
-		if( gamePixel*zoom>=1 )
-			zoom = Math.floor(gamePixel*zoom) / gamePixel;
+		var zoom = M.fmin( 1, M.fmin( usableW/(M.fmax(right-left,1)*gamePixel), usableH/(M.fmax(bottom-top,1)*gamePixel) ) );
+		var levelW = Game.exists() && Game.ME.level!=null ? Game.ME.level.pxWid : 0;
+		var levelH = Game.exists() && Game.ME.level!=null ? Game.ME.level.pxHei : 0;
+		if( levelW>0 && levelH>0 )
+			zoom = M.fmax( zoom, M.fmin( area.w/(levelW*gamePixel), area.h/(levelH*gamePixel) ) );
 
-		// Transform: screenPos' = screenPos*zoom + offset, so that bounds center goes to the quarter center
-		var boundsCenterX = (left+right)*0.5 + screenW*0.5;
-		var boundsCenterY = (top+bottom)*0.5 + screenH*0.5;
-		var areaCenterX = area.x + area.w*0.5;
-		var areaCenterY = area.y + area.h*0.5;
-		viewScales.push(zoom);
-		viewOffsetsX.push( -M.round(areaCenterX - boundsCenterX*zoom) );
-		viewOffsetsY.push( -M.round(areaCenterY - boundsCenterY*zoom) );
+		// Smooth zoom and framing
+		var targetX = (left+right)*0.5;
+		var targetY = (top+bottom)*0.5;
+		if( overviewZoom==null ) {
+			overviewZoom = zoom;
+			overviewX = targetX;
+			overviewY = targetY;
+		}
+		else {
+			var ratio = 1 - Math.pow(1-overviewSmoothing, elapsedS*60);
+			overviewZoom += (zoom-overviewZoom) * ratio;
+			overviewX += (targetX-overviewX) * ratio;
+			overviewY += (targetY-overviewY) * ratio;
+		}
+
+		// Keep the visible window inside the level bounds (centered if the level is smaller)
+		var halfVisibleW = area.w*0.5 / (gamePixel*overviewZoom);
+		var halfVisibleH = area.h*0.5 / (gamePixel*overviewZoom);
+		var centerX = overviewX;
+		var centerY = overviewY;
+		if( levelW>0 && levelH>0 ) {
+			centerX = levelW<=halfVisibleW*2 ? levelW*0.5 : M.fclamp(centerX, halfVisibleW, levelW-halfVisibleW);
+			centerY = levelH<=halfVisibleH*2 ? levelH*0.5 : M.fclamp(centerY, halfVisibleH, levelH-halfVisibleH);
+		}
+
+		// Transform: screenPos' = screenPos*zoom - offset, so that the framing center goes to the quarter center
+		var centerScreenX = centerX*gamePixel + scroller.x;
+		var centerScreenY = centerY*gamePixel + scroller.y;
+		viewScales.push(overviewZoom);
+		viewOffsetsX.push( -M.round(area.x + area.w*0.5 - centerScreenX*overviewZoom) );
+		viewOffsetsY.push( -M.round(area.y + area.h*0.5 - centerScreenY*overviewZoom) );
 	}
 
 
@@ -301,6 +334,7 @@ class SplitScreen extends h2d.Drawable {
 		fixedSplit = false;
 		fixedFade = 0;
 		smoothedAngle = null;
+		overviewZoom = null;
 		scroller.visible = true;
 	}
 
