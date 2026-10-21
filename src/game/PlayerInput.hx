@@ -1,6 +1,6 @@
 /**
 	Inputs of one local player: its own Controller, with its own keyboard and gamepad bindings.
-	Gamepads are given to players by the `PadDispatcher` in App (first connected pad goes to player 0, etc.)
+	Gamepads are given to players by the `PadDispatcher` in App (first pad to press a button goes to player 0, etc.)
 **/
 class PlayerInput {
 	/** Player index, starting at 0 **/

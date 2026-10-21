@@ -17,7 +17,7 @@ class App extends dn.Process {
 	/** Local players inputs. Each player owns its own keyboard & gamepad bindings. **/
 	public var players : Array<PlayerInput>;
 
-	/** Gives physical gamepads to players (first connected pad goes to player 0, etc.) **/
+	/** Gives physical gamepads to players: first pad to press a button goes to player 0, etc. **/
 	public var padDispatcher : PadDispatcher<GameAction>;
 
 	/** Controller Access created for Main & Boot **/
@@ -236,7 +236,7 @@ class App extends dn.Process {
 		PadDispatcher.addDirectInputMapping("030000004f04000015b3000000000000,Thrustmaster Dual Analog 4,a:b0,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,leftshoulder:b4,leftstick:b10,lefttrigger:b5,leftx:a0,lefty:a1,rightshoulder:b6,rightstick:b11,righttrigger:b7,rightx:a2,righty:a3,start:b9,x:b1,y:b3,");
 
 		players = [ for(i in 0...Const.MAX_PLAYERS) new PlayerInput(i) ];
-		padDispatcher = new PadDispatcher([ for(p in players) p.controller ]);
+		padDispatcher = new PadDispatcher([ for(p in players) p.controller ], ClaimOnPress); // first pad to press a button is player 1
 
 		controller = dn.heaps.input.Controller.createFromAbstractEnum(GameAction, false);
 		controller.assignPad(padDispatcher.sharedPad);
