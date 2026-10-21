@@ -28,8 +28,12 @@ class SplitScreen extends h2d.Drawable {
 	public var lineFadeRatio = 0.12;
 
 	public var lineColor : Col = White;
+	/** Inner edges of the separator, when a target has no specific color **/
 	public var borderColor : Col = Black;
-	public var borderAlpha = 0.5;
+	public var borderAlpha = 0.85;
+
+	/** Per target color of the separator inner edges, on the target side **/
+	var targetColors : Array<Col> = [];
 
 	/** TRUE when the screen is currently split **/
 	public var isSplit(default,null) = false;
@@ -45,8 +49,9 @@ class SplitScreen extends h2d.Drawable {
 
 
 	/** Entities that each get their own view when split (max `MAX_VIEWS`) **/
-	public function setTargets(entities:Array<Entity>) {
+	public function setTargets(entities:Array<Entity>, ?colors:Array<Col>) {
 		targets = entities.slice(0, MAX_VIEWS);
+		targetColors = colors==null ? [] : colors.slice(0, MAX_VIEWS);
 	}
 
 
@@ -73,6 +78,7 @@ class SplitScreen extends h2d.Drawable {
 	/** Compute views offsets, slices and separator lines for current frame **/
 	function updateViews() {
 		var live = getLiveTargets();
+		var liveColors = [ for(i in 0...targets.length) if( targets[i].isAlive() ) i<targetColors.length ? targetColors[i] : borderColor ];
 		var scene = getScene();
 		if( live.length<2 || scene==null ) {
 			setSplit(false);
@@ -179,8 +185,12 @@ class SplitScreen extends h2d.Drawable {
 		s.lineHalfWidth = scale*0.5;
 		s.borderWidth = scale;
 		s.lineColor.setColor(lineColor);
-		s.borderColor.setColor(borderColor);
-		s.borderColor.w = borderAlpha;
+		s.borderAlpha = borderAlpha;
+		var edgeColors = [ for(i in 0...MAX_VIEWS) i<liveColors.length ? liveColors[i] : borderColor ];
+		s.edgeColor0.setColor(edgeColors[0]);
+		s.edgeColor1.setColor(edgeColors[1]);
+		s.edgeColor2.setColor(edgeColors[2]);
+		s.edgeColor3.setColor(edgeColors[3]);
 	}
 
 
@@ -279,7 +289,11 @@ private class SplitScreenShader extends hxsl.Shader {
 		@param var lineHalfWidth : Float;
 		@param var borderWidth : Float;
 		@param var lineColor : Vec3;
-		@param var borderColor : Vec4;
+		@param var borderAlpha : Float;
+		@param var edgeColor0 : Vec3;
+		@param var edgeColor1 : Vec3;
+		@param var edgeColor2 : Vec3;
+		@param var edgeColor3 : Vec3;
 
 		/** Distance from point `d` (relative to center) to the half-line starting at center with angle `a` **/
 		function rayDist(d:Vec2, a:Float) : Float {
@@ -318,7 +332,14 @@ private class SplitScreenShader extends hxsl.Shader {
 			if( dist<lineHalfWidth )
 				col.rgb = mix(col.rgb, lineColor, lineAlpha);
 			else if( dist<lineHalfWidth+borderWidth )
-				col.rgb = mix(col.rgb, borderColor.rgb, borderColor.a*lineAlpha);
+			{
+				// Inner edge: color of the target displayed on this side
+				var edge = edgeColor0;
+				if( view>0.5 && view<1.5 ) edge = edgeColor1;
+				if( view>1.5 && view<2.5 ) edge = edgeColor2;
+				if( view>2.5 ) edge = edgeColor3;
+				col.rgb = mix(col.rgb, edge, borderAlpha*lineAlpha);
+			}
 
 			pixelColor = vec4(col.rgb, 1);
 		}

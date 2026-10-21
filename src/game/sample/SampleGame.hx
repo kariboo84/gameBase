@@ -39,7 +39,7 @@ class SampleGame extends Game {
 		camera.trackGroup(group, false);
 		// Split-screen slices meet at the screen center: the camera must keep the group centered, even if the void beyond level bounds becomes visible
 		camera.clampToLevelBounds = group.length<2;
-		splitScreen.setTargets(group);
+		splitScreen.setTargets(group, [ for(h in heroes) if( h.isAlive() ) h.getPlayerColor() ]);
 	}
 
 	function hasJoined(p:PlayerInput) {

@@ -53,7 +53,7 @@ class SamplePlayer extends Entity {
 	}
 
 
-	function getPlayerColor() : Col {
+	public function getPlayerColor() : Col {
 		return switch player.index {
 			case 0: Green;
 			case 1: Blue;
