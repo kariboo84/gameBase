@@ -232,6 +232,9 @@ class App extends dn.Process {
 
 	/** Init game controller and default key bindings **/
 	function initController() {
+		// Extra DirectInput pads, unknown to the DirectX backend (SDL_GameControllerDB format)
+		PadDispatcher.addDirectInputMapping("030000004f04000015b3000000000000,Thrustmaster Dual Analog 4,a:b0,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,leftshoulder:b4,leftstick:b10,lefttrigger:b5,leftx:a0,lefty:a1,rightshoulder:b6,rightstick:b11,righttrigger:b7,rightx:a2,righty:a3,start:b9,x:b1,y:b3,");
+
 		players = [ for(i in 0...Const.MAX_PLAYERS) new PlayerInput(i) ];
 		padDispatcher = new PadDispatcher([ for(p in players) p.controller ]);
 
