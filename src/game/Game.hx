@@ -13,6 +13,9 @@ class Game extends AppChildProcess {
 	/** Container of all visual game objects. Ths wrapper is moved around by Camera. **/
 	public var scroller : h2d.Layers;
 
+	/** Dynamic split-screen for local multiplayer (inactive with less than 2 targets) **/
+	public var splitScreen : SplitScreen;
+
 	/** Level data **/
 	public var level : Level;
 
@@ -36,6 +39,9 @@ class Game extends AppChildProcess {
 		scroller = new h2d.Layers();
 		root.add(scroller, Const.DP_BG);
 		scroller.filter = new h2d.filter.Nothing(); // force rendering for pixel perfect
+
+		splitScreen = new SplitScreen(scroller);
+		root.add(splitScreen, Const.DP_BG);
 
 		fx = new Fx();
 		hud = new ui.Hud();

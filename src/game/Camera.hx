@@ -10,6 +10,15 @@ class Camera extends GameChildProcess {
 	var clampedFocus : LPoint;
 
 	var target : Null<Entity>;
+
+	/** If not empty, the camera tracks the center of these entities (instead of `target`) **/
+	var targetGroup : Array<Entity> = [];
+
+	/** Actual camera focus X in level pixels (after bounds clamping) **/
+	public var focusX(get,never) : Float; inline function get_focusX() return clampedFocus.levelX;
+
+	/** Actual camera focus Y in level pixels (after bounds clamping) **/
+	public var focusY(get,never) : Float; inline function get_focusY() return clampedFocus.levelY;
 	public var targetOffX = 0.;
 	public var targetOffY = 0.;
 
@@ -155,6 +164,7 @@ class Camera extends GameChildProcess {
 	**/
 	public function trackEntity(e:Entity, immediate:Bool, speed=1.0) {
 		target = e;
+		targetGroup = [];
 		setTrackingSpeed(speed);
 		if( immediate || rawFocus.levelX==0 && rawFocus.levelY==0 )
 			centerOnTarget();
@@ -164,14 +174,61 @@ class Camera extends GameChildProcess {
 		trackingSpeed = M.fclamp(spd, 0.01, 10);
 	}
 
+	/**
+		Enable auto tracking of the center of a group of entities (eg. local multiplayer).
+		Replaces any single entity tracking.
+	**/
+	public function trackGroup(group:Array<Entity>, immediate:Bool, speed=1.0) {
+		target = null;
+		targetGroup = group.copy();
+		setTrackingSpeed(speed);
+		if( immediate )
+			centerOnTarget();
+	}
+
 	public inline function stopTracking() {
 		target = null;
+		targetGroup = [];
+	}
+
+	inline function hasTrackingTarget() {
+		return target!=null || getLiveGroupCount()>0;
+	}
+
+	function getLiveGroupCount() {
+		var n = 0;
+		for(e in targetGroup)
+			if( e.isAlive() )
+				n++;
+		return n;
+	}
+
+	/** X of the tracked point: single target center, or average center of the tracked group **/
+	function getTrackedX() : Float {
+		if( target!=null )
+			return target.centerX + targetOffX;
+		var sum = 0.;
+		for(e in targetGroup)
+			if( e.isAlive() )
+				sum += e.centerX;
+		return sum / getLiveGroupCount() + targetOffX;
+	}
+
+	/** Y of the tracked point: single target center, or average center of the tracked group **/
+	function getTrackedY() : Float {
+		if( target!=null )
+			return target.centerY + targetOffY;
+		var sum = 0.;
+		for(e in targetGroup)
+			if( e.isAlive() )
+				sum += e.centerY;
+		return sum / getLiveGroupCount() + targetOffY;
 	}
 
 	public function centerOnTarget() {
-		if( target!=null ) {
-			rawFocus.levelX = target.centerX + targetOffX;
-			rawFocus.levelY = target.centerY + targetOffY;
+		if( hasTrackingTarget() ) {
+			rawFocus.levelX = getTrackedX();
+			rawFocus.levelY = getTrackedY();
 		}
 	}
 
@@ -325,11 +382,11 @@ class Camera extends GameChildProcess {
 
 
 		// Follow target entity
-		if( target!=null ) {
+		if( hasTrackingTarget() ) {
 			var spdX = 0.015*trackingSpeed*zoom;
 			var spdY = 0.023*trackingSpeed*zoom;
-			var tx = target.centerX + targetOffX;
-			var ty = target.centerY + targetOffY;
+			var tx = getTrackedX();
+			var ty = getTrackedY();
 
 			var a = rawFocus.angTo(tx,ty);
 			var distX = M.fabs( tx - rawFocus.levelX );

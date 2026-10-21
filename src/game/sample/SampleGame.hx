@@ -30,6 +30,14 @@ class SampleGame extends Game {
 		if( heroes.length>0 )
 			hero.setPosCase(heroes[0].cx, heroes[0].cy);
 		heroes.push(hero);
+		updateCameras();
+	}
+
+	/** Shared camera follows the group, split-screen gives each hero its own view when they move apart **/
+	function updateCameras() {
+		var group : Array<Entity> = [ for(h in heroes) if( h.isAlive() ) h ];
+		camera.trackGroup(group, false);
+		splitScreen.setTargets(group);
 	}
 
 	function hasJoined(p:PlayerInput) {
