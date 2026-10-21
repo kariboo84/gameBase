@@ -40,6 +40,8 @@ class SampleGame extends Game {
 
 	override function update() {
 		super.update();
+		if( destroyed ) // eg. game restarted during super.update()
+			return;
 
 		// Other players join by pressing Jump
 		for(p in App.ME.players)
