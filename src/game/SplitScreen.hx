@@ -2,9 +2,10 @@
 	Dynamic split-screen for local multiplayer ("DBZ" / Voronoi style).
 
 	- While every target stays close to the group center, all views are identical: a single shared screen is displayed.
-	- When targets move apart, the screen is cut in pie slices around the group center: one slice per target, ordered by angle.
-	  With 2 targets, the cut is a straight line perpendicular to the direction between them.
-	- Each target stays at the edge of an ellipse around the group center, in its own slice, so the transition from shared to split screen is seamless.
+	- When targets move apart, the screen is cut in EQUAL pie slices meeting at the screen center: one slice per target, ordered by angle,
+	  rotated to best match the targets directions. With 2 targets, the cut is a straight line perpendicular to the direction between them.
+	- Each target stays on an ellipse around the screen center, progressively moved to the middle of its slice, so the transition from shared to split screen is seamless.
+	- For this to work, the main camera should keep the group center at the screen center: disable level bounds clamping while several targets are tracked.
 
 	The game scroller is rendered once per view into an offscreen texture (same pixel-perfect scale), then a shader composes the final image and draws the separator lines.
 	The main `Camera` should track the same group (`camera.trackGroup(...)`).
@@ -81,67 +82,100 @@ class SplitScreen extends h2d.Drawable {
 		var screenW = scene.width;
 		var screenH = scene.height;
 		var scale = scroller.scaleX;
+		var count = live.length;
 
-		// Group center, in level pixels and on screen
-		var groupX = 0.;
-		var groupY = 0.;
-		for(e in live) {
-			groupX += e.centerX;
-			groupY += e.centerY;
-		}
-		groupX /= live.length;
-		groupY /= live.length;
-		var centerX = M.fclamp( groupX*scale + scroller.x, screenW*0.1, screenW*0.9 );
-		var centerY = M.fclamp( groupY*scale + scroller.y, screenH*0.1, screenH*0.9 );
+		// Slices always meet at the screen center, so they all get the same area
+		var centerX = screenW*0.5;
+		var centerY = screenH*0.5;
 
-		// Each target is kept inside an ellipse around the group center: the view offset is what exceeds it
+		// Targets positions on the shared view, relative to screen center
 		var radiusX = screenW*0.5*splitRadiusRatio;
 		var radiusY = screenH*0.5*splitRadiusRatio;
 		var maxEllipseDist = 0.;
+		var relX = [];
+		var relY = [];
+		var ellipseDists = [];
 		var angles = [];
-		viewOffsetsX = [];
-		viewOffsetsY = [];
 		for(e in live) {
-			var relX = (e.centerX-groupX) * scale;
-			var relY = (e.centerY-groupY) * scale;
-			var ellipseDist = Math.sqrt( (relX/radiusX)*(relX/radiusX) + (relY/radiusY)*(relY/radiusY) );
-			var keep = ellipseDist>1 ? 1/ellipseDist : 1;
-			viewOffsetsX.push( M.round(relX - relX*keep) );
-			viewOffsetsY.push( M.round(relY - relY*keep) );
-			angles.push( Math.atan2(relY, relX) );
-			maxEllipseDist = M.fmax(maxEllipseDist, ellipseDist);
+			var x = e.centerX*scale + scroller.x - centerX;
+			var y = e.centerY*scale + scroller.y - centerY;
+			var dist = Math.sqrt( (x/radiusX)*(x/radiusX) + (y/radiusY)*(y/radiusY) );
+			relX.push(x);
+			relY.push(y);
+			ellipseDists.push(dist);
+			angles.push( Math.atan2(y,x) );
+			maxEllipseDist = M.fmax(maxEllipseDist, dist);
 		}
 
 		setSplit( maxEllipseDist>1 );
 		if( !isSplit )
 			return;
 
-		// Pie slices: targets sorted by angle, boundaries at mid-angles between neighbours
-		var order = [ for(i in 0...live.length) i ];
+		// Equal slices (360/count each). Only their rotation and their attribution are chosen,
+		// to keep the targets order around the center and to best match their directions.
+		var sliceAng = M.PI2 / count;
+		var order = [ for(i in 0...count) i ];
 		order.sort( (a,b)->Reflect.compare(angles[a], angles[b]) );
-		var boundaries = [];
-		for(k in 0...order.length) {
-			var a = angles[ order[k] ];
-			var b = angles[ order[(k+1) % order.length] ];
-			var delta = positiveAngle(b-a);
-			if( delta<=0 )
-				delta = M.PI2; // same angle (only possible with a single distinct direction)
-			boundaries.push(a + delta*0.5);
+
+		var bestShift = 0;
+		var bestRotation = 0.;
+		var bestError = 1e9;
+		for(shift in 0...count) {
+			// Optimal rotation for this attribution: circular mean of the angular differences
+			var sumCos = 0.;
+			var sumSin = 0.;
+			for(k in 0...count) {
+				var a = angles[ order[(k+shift) % count] ] - (k+0.5)*sliceAng;
+				sumCos += Math.cos(a);
+				sumSin += Math.sin(a);
+			}
+			var rotation = Math.atan2(sumSin, sumCos);
+			var error = 0.;
+			for(k in 0...count) {
+				var diff = M.radSubstract( angles[ order[(k+shift) % count] ], rotation + (k+0.5)*sliceAng );
+				error += diff*diff;
+			}
+			if( error<bestError ) {
+				bestError = error;
+				bestShift = shift;
+				bestRotation = rotation;
+			}
 		}
 
-		// Shader params: sector k spans [boundary k, boundary k+1[ and displays target order[k+1]
+		// Slice middle angle of each target
+		var sliceMiddle = [ for(i in 0...count) 0. ];
+		var sectorView = [ for(k in 0...MAX_VIEWS) 0 ];
+		for(k in 0...count) {
+			var target = order[(k+bestShift) % count];
+			sliceMiddle[target] = bestRotation + (k+0.5)*sliceAng;
+			sectorView[k] = target;
+		}
+
+		// View offsets: each target is kept on its ellipse, progressively moved toward the middle of its slice
+		var splitRatio = M.fclamp( (maxEllipseDist-1)/lineFadeRatio, 0, 1 );
+		viewOffsetsX = [];
+		viewOffsetsY = [];
+		for(i in 0...count) {
+			var keep = ellipseDists[i]>1 ? 1/ellipseDists[i] : 1.;
+			var dist = Math.sqrt(relX[i]*relX[i] + relY[i]*relY[i]) * keep;
+			var ang = angles[i] + M.radSubstract(sliceMiddle[i], angles[i]) * splitRatio;
+			var wantedX = Math.cos(ang) * dist;
+			var wantedY = Math.sin(ang) * dist;
+			viewOffsetsX.push( M.round(relX[i] - wantedX) );
+			viewOffsetsY.push( M.round(relY[i] - wantedY) );
+		}
+
+		// Shader params: slice k starts at rotation + k*sliceAng
 		var s = compositeShader;
-		s.viewCount = live.length;
+		s.viewCount = count;
 		s.screenSize.set(screenW, screenH);
 		s.center.set(centerX, centerY);
-		s.startAngle = boundaries[0];
-		var rel = [ for(k in 1...MAX_VIEWS) k<boundaries.length ? positiveAngle(boundaries[k]-boundaries[0]) : 99. ];
-		s.bounds.set(rel[0], rel[1], rel[2]);
-		var sectorView = [ for(k in 0...MAX_VIEWS) k<order.length ? order[(k+1) % order.length] : 0 ];
+		s.startAngle = bestRotation;
+		s.bounds.set(sliceAng, sliceAng*2, sliceAng*3);
 		s.sectorViews.set(sectorView[0], sectorView[1], sectorView[2], sectorView[3]);
 
 		// Separator: 1 light game pixel, with a darker game pixel on each side
-		s.lineAlpha = M.fclamp( (maxEllipseDist-1)/lineFadeRatio, 0, 1 );
+		s.lineAlpha = splitRatio;
 		s.lineHalfWidth = scale*0.5;
 		s.borderWidth = scale;
 		s.lineColor.setColor(lineColor);
