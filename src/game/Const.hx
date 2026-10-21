@@ -13,6 +13,9 @@ class Const {
 	**/
 	public static final FIXED_UPDATE_FPS = 30;
 
+	/** Max number of local players (each one gets its own Controller) **/
+	public static final MAX_PLAYERS = 4;
+
 	/** Grid size in pixels **/
 	public static final GRID = 16;
 

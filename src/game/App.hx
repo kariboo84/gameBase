@@ -8,8 +8,17 @@ class App extends dn.Process {
 	/** 2D scene **/
 	public var scene(default,null) : h2d.Scene;
 
-	/** Used to create "ControllerAccess" instances that will grant controller usage (keyboard or gamepad) **/
+	/**
+		Shared controller, usable by ALL players (menus, pause, debug...): it reads every connected gamepad and all keyboard bindings.
+		Used to create "ControllerAccess" instances that will grant controller usage (keyboard or gamepad).
+	**/
 	public var controller : Controller<GameAction>;
+
+	/** Local players inputs. Each player owns its own keyboard & gamepad bindings. **/
+	public var players : Array<PlayerInput>;
+
+	/** Gives physical gamepads to players (first connected pad goes to player 0, etc.) **/
+	public var padDispatcher : PadDispatcher<GameAction>;
 
 	/** Controller Access created for Main & Boot **/
 	public var ca : ControllerAccess<GameAction>;
@@ -223,7 +232,11 @@ class App extends dn.Process {
 
 	/** Init game controller and default key bindings **/
 	function initController() {
-		controller = dn.heaps.input.Controller.createFromAbstractEnum(GameAction);
+		players = [ for(i in 0...Const.MAX_PLAYERS) new PlayerInput(i) ];
+		padDispatcher = new PadDispatcher([ for(p in players) p.controller ]);
+
+		controller = dn.heaps.input.Controller.createFromAbstractEnum(GameAction, false);
+		controller.assignPad(padDispatcher.sharedPad);
 		ca = controller.createAccess();
 		ca.lockCondition = ()->return destroyed || anyInputHasFocus();
 
@@ -296,6 +309,10 @@ class App extends dn.Process {
 
 	override function onDispose() {
 		super.onDispose();
+
+		padDispatcher.dispose();
+		for(p in players)
+			p.dispose();
 
 		hxd.Window.getInstance().removeEventTarget( onWindowEvent );
 

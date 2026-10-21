@@ -9,6 +9,7 @@ package sample;
 **/
 
 class SamplePlayer extends Entity {
+	public var player(default,null) : PlayerInput;
 	var ca : ControllerAccess<GameAction>;
 	var walkSpeed = 0.;
 
@@ -17,8 +18,9 @@ class SamplePlayer extends Entity {
 		inline function get_onGround() return !destroyed && vBase.dy==0 && yr==1 && level.hasCollision(cx,cy+1);
 
 
-	public function new() {
+	public function new(player:PlayerInput) {
 		super(5,5);
+		this.player = player;
 
 		// Start point using level entity "PlayerStart"
 		var start = level.data.l_Entities.all_PlayerStart[0];
@@ -28,17 +30,28 @@ class SamplePlayer extends Entity {
 		// Misc inits
 		vBase.setFricts(0.84, 0.94);
 
-		// Camera tracks this
-		camera.trackEntity(this, true);
+		// Camera tracks the first player only (multiplayer camera is game dependent)
+		if( player.index==0 )
+			camera.trackEntity(this, true);
 		camera.clampToLevelBounds = true;
 
 		// Init controller
-		ca = App.ME.controller.createAccess();
+		ca = player.controller.createAccess();
 		ca.lockCondition = Game.isGameControllerLocked;
 
 		// Placeholder display
-		var b = new h2d.Bitmap( h2d.Tile.fromColor(Green, iwid, ihei), spr );
+		var b = new h2d.Bitmap( h2d.Tile.fromColor(getPlayerColor(), iwid, ihei), spr );
 		b.tile.setCenterRatio(0.5,1);
+	}
+
+
+	function getPlayerColor() : Col {
+		return switch player.index {
+			case 0: Green;
+			case 1: Blue;
+			case 2: Red;
+			case _: Yellow;
+		}
 	}
 
 
