@@ -40,6 +40,8 @@ class Game extends AppChildProcess {
 		root.add(scroller, Const.DP_BG);
 		scroller.filter = new h2d.filter.Nothing(); // force rendering for pixel perfect
 
+		// Split-screen draws the scroller itself (once per player view) when the screen is split, so it is added right above it.
+		// It does nothing until it is given at least 2 targets (see `SampleGame.updateCameras()`).
 		splitScreen = new SplitScreen(scroller);
 		root.add(splitScreen, Const.DP_BG);
 

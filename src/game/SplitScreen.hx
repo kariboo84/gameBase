@@ -6,19 +6,45 @@
 	  Each target stays on its own side. The transition from shared to split screen is seamless, and the line rotation is smoothed.
 	- 3+ targets: fixed quarters, each target always keeps the same one. With 3 targets, the 4th quarter shows a zoomed-out overview of the whole group. Shared/split transitions are short fades, with a hysteresis to avoid flickering.
 
-	The game scroller is rendered once per view into an offscreen texture (same pixel-perfect scale), then a shader composes the final image and draws the separators.
 	The main `Camera` should track the same group (`camera.trackGroup(...)`), WITHOUT level bounds clamping, so that the group center stays at the screen center.
+
+	Usage (see `Game` and `sample.SampleGame`):
+	```haxe
+	splitScreen = new SplitScreen(scroller);  // in Game, added right above the scroller
+	root.add(splitScreen, Const.DP_BG);
+	camera.trackGroup(heroes, false);         // when players join or leave
+	camera.clampToLevelBounds = heroes.length<2;
+	splitScreen.setTargets(heroes, heroesColors);
+	```
+
+	How it works:
+	- Every frame, the targets positions are measured on the SHARED screen (the normal camera view, relative to the screen center).
+	- Each view is the shared screen rendering, shifted by a "view offset" (and scaled, for the 3 players overview only).
+	  A view offset is computed so that its target appears where we want it on screen (its half, its quarter...).
+	- While a target is inside the split ellipse, its wanted position IS its shared screen position: its offset is zero, all views are identical,
+	  so the screen looks unsplit. Beyond the ellipse, the target is held on it: this is why the 2 players split appears progressively, without any jump.
+	- Rendering: when split, the scroller is hidden from the normal rendering, and drawn by `renderViews()` once per view into offscreen textures
+	  (an h2d.Camera transform applies the offset, so no game object is moved). The composite shader then picks, for each screen pixel,
+	  the texture of the view owning this pixel, and draws the separators. UI layers above the scroller are not affected.
 **/
 class SplitScreen extends h2d.Drawable {
+	/** Max number of targets (extra targets are ignored). The composite shader handles up to 4 textures. **/
 	public static inline var MAX_VIEWS = 4;
 
+	/** Game objects container (moved by the main Camera), drawn once per view when split **/
 	var scroller : h2d.Object;
 	var targets : Array<Entity> = [];
 	var targetColors : Array<Col> = [];
+
+	/** One offscreen render per view, same size as the screen **/
 	var textures : Array<h3d.mat.Texture> = [];
+
+	/** Per view transform, applied on the shared screen rendering: screenPos' = screenPos*scale - offset (screen pixels) **/
 	var viewOffsetsX : Array<Float> = [];
 	var viewOffsetsY : Array<Float> = [];
 	var viewScales : Array<Float> = [];
+
+	/** Detached h2d.Camera, only used as a transform to render the scroller with a view offset **/
 	var viewCam : h2d.Camera;
 	var compositeShader : SplitScreenShader;
 
@@ -43,6 +69,7 @@ class SplitScreen extends h2d.Drawable {
 	/** 3+ targets: fade duration between shared and split screen, in seconds **/
 	public var fixedFadeS = 0.25;
 
+	/** Center line of the separators **/
 	public var lineColor : Col = White;
 
 	/** 3 targets: margin around the group in the overview quarter (ratio of the quarter size) **/
@@ -61,10 +88,15 @@ class SplitScreen extends h2d.Drawable {
 	/** TRUE when the screen is currently (even partially) split **/
 	public var isSplit(default,null) = false;
 
+	/** 2 targets: smoothed direction from target 1 to target 0 (null when not split) **/
 	var smoothedAngle : Null<Float>;
+
+	/** 3 targets: smoothed overview zoom (null when not displayed) and framing center (level pixels) **/
 	var overviewZoom : Null<Float>;
 	var overviewX = 0.;
 	var overviewY = 0.;
+
+	/** 3+ targets: split state (with hysteresis) and its fade ratio (0=shared screen, 1=split screen) **/
 	var fixedSplit = false;
 	var fixedFade = 0.;
 
@@ -174,11 +206,13 @@ class SplitScreen extends h2d.Drawable {
 			var ang = Math.atan2(relY[i], relX[i]);
 			ang += M.radSubstract(halfMiddle, ang) * placement;
 
+			// Distance on the shared screen, held on the split ellipse once outside of it
 			var keep = ellipseDists[i]>1 ? 1/ellipseDists[i] : 1.;
 			var sharedDist = Math.sqrt(relX[i]*relX[i] + relY[i]*relY[i]) * keep;
 			var holdDist = ellipseRadius(ang, screenW*0.5*dynamicHoldRatio, screenH*0.5*dynamicHoldRatio);
 			var dist = M.lerp(sharedDist, holdDist, placement);
 
+			// Offset = where the target is on the shared screen - where we want it (rounded for pixel perfect rendering)
 			viewOffsetsX.push( M.round(relX[i] - Math.cos(ang)*dist) );
 			viewOffsetsY.push( M.round(relY[i] - Math.sin(ang)*dist) );
 		}
@@ -196,6 +230,7 @@ class SplitScreen extends h2d.Drawable {
 	function updateFixedSplit(screenW:Float, screenH:Float, relX:Array<Float>, relY:Array<Float>, maxEllipseDist:Float, elapsedS:Float) {
 		smoothedAngle = null;
 
+		// Hysteresis: split when a target leaves the split ellipse, merge back only when everyone is inside the smaller merge ellipse
 		if( !fixedSplit && maxEllipseDist>1 )
 			fixedSplit = true;
 		else if( fixedSplit && maxEllipseDist<fixedMergeRatio/splitRadiusRatio )
@@ -310,6 +345,7 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
+	/** Shader params shared by both modes: screen size, separator widths and colors **/
 	function setShaderCommons(screenW:Float, screenH:Float, count:Int, colors:Array<Col>) {
 		var s = compositeShader;
 		var scale = scroller.scaleX;
@@ -329,6 +365,7 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
+	/** Back to the normal single screen rendering (less than 2 targets) **/
 	function resetSplit() {
 		isSplit = false;
 		fixedSplit = false;
@@ -351,6 +388,7 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
+	/** (Re)allocate the offscreen view textures when the views count or the screen size changes **/
 	function initTextures(count:Int, wid:Int, hei:Int) {
 		if( textures.length==count && textures[0].width==wid && textures[0].height==hei )
 			return;
@@ -366,6 +404,11 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
+	/**
+		Render the scroller once per view into the offscreen textures.
+		The scroller is hidden from the normal scene rendering while split, so it is temporarily made visible and drawn directly (`drawRec`).
+		Its children positions were already updated by the scene sync of this frame: only the h2d.Camera transform changes between views.
+	**/
 	@:access(h2d.Object)
 	@:access(h2d.Camera)
 	function renderViews(ctx:h2d.RenderContext) {
@@ -396,6 +439,7 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
+	/** When split: render all views, then draw one full screen quad with the composite shader (view 0 is its base texture) **/
 	override function draw(ctx:h2d.RenderContext) {
 		if( !isSplit )
 			return;

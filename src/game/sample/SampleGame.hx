@@ -1,12 +1,20 @@
 package sample;
 
 /**
-	This small class creates a SamplePlayer for player 1 in current level.
-	Other local players join the game by pressing their Jump input (keyboard or gamepad).
+	Local multiplayer sample:
+	- player 1 is created in the current level,
+	- other local players join the game by pressing their Jump input (keyboard or gamepad), [F2] adds an idle test player,
+	- the camera follows the group, and the split-screen gives each hero its own view when they move apart,
+	- heroes can stand on each other heads (see `SamplePlayer.applyCarry()`).
 **/
 class SampleGame extends Game {
+	/** Heroes in the level, in joining order **/
 	var heroes : Array<SamplePlayer> = [];
+
+	/** One access per player, only used to detect "join" presses (heroes have their own accesses once spawned) **/
 	var joinAccesses : Array<ControllerAccess<GameAction>> = [];
+
+	/** Number of fixedUpdate calls, used to apply carrying only once per hero and per fixed frame **/
 	var fixedFrameCount = 0;
 
 	public function new() {
@@ -27,6 +35,7 @@ class SampleGame extends Game {
 
 	function spawnPlayer(p:PlayerInput) {
 		var hero = new SamplePlayer(p);
+		// Late joiners appear next to the first hero
 		if( heroes.length>0 )
 			hero.setPosCase(heroes[0].cx, heroes[0].cy);
 		heroes.push(hero);
@@ -74,7 +83,8 @@ class SampleGame extends Game {
 		if( destroyed )
 			return;
 
-		// Players standing on other players follow them, once everyone has moved
+		// Players standing on other players follow them. This is done after ALL entities fixedUpdate,
+		// so that carriers positions are final for this frame, whatever the entities update order.
 		for(h in heroes)
 			if( !h.destroyed )
 				h.applyCarry(fixedFrameCount);

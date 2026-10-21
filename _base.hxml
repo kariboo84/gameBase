@@ -5,7 +5,9 @@
 -lib hscript
 -lib ldtk-haxe-api
 -lib heaps-aseprite
-# Local multipad fork of deepnightLibs (must come after libs depending on deepnightLibs)
+# deepnightLibs: local fork with local multiplayer gamepad support (PadDispatcher), instead of "-lib deepnightLibs".
+# It must be declared AFTER the libs depending on deepnightLibs (ldtk-haxe-api, heaps-aseprite):
+# they add the haxelib deepnightLibs class path, and the last declared class path wins.
 -cp ../deepnightLibs-multipad/src
 
 -D useProcessTweenie

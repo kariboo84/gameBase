@@ -6,9 +6,12 @@ package sample;
 	- falls with gravity
 	- has basic level collisions
 	- some squash animations, because it's cheap and they do the job
+	- local multiplayer: controlled by its own `PlayerInput` (keyboard keys + gamepad of this player only)
+	- players can stand on each other heads: the one on top is carried when idle, and can jump from there (see "Carrying" below)
 **/
 
 class SamplePlayer extends Entity {
+	/** Local player controlling this hero **/
 	public var player(default,null) : PlayerInput;
 	var ca : ControllerAccess<GameAction>;
 	var walkSpeed = 0.;
@@ -18,6 +21,8 @@ class SamplePlayer extends Entity {
 
 	/** Other player this one is standing on (and carried by), if any **/
 	var carrier : Null<SamplePlayer>;
+
+	/** Last fixed frame where `applyCarry()` ran, to move each hero only once per frame, even in stacks **/
 	var carryDoneFrame = -1;
 
 	// This is TRUE if the player is not falling (standing on the level or on another player's head)
@@ -41,7 +46,7 @@ class SamplePlayer extends Entity {
 		// Misc inits
 		vBase.setFricts(0.84, 0.94);
 
-		// Camera tracks the first player only (multiplayer camera is game dependent)
+		// Single player camera (SampleGame switches to group tracking, without level bounds clamping, as soon as 2 heroes exist)
 		if( player.index==0 )
 			camera.trackEntity(this, true);
 		camera.clampToLevelBounds = true;
@@ -56,6 +61,7 @@ class SamplePlayer extends Entity {
 	}
 
 
+	/** Color identifying the player (placeholder display, split-screen separators) **/
 	public function getPlayerColor() : Col {
 		return switch player.index {
 			case 0: Green;
@@ -87,12 +93,22 @@ class SamplePlayer extends Entity {
 	}
 
 
+	/*
+		Carrying
+		--------
+		- A falling hero whose feet cross the top of another hero's head lands on it (`onPreStepY()` -> `startCarriedBy()`).
+		- While carried, the hero is "on ground": no gravity, and it can jump. Doing nothing, it simply follows its carrier.
+		- `applyCarry()` moves it with its carrier, once all entities moved (called by SampleGame), and handles stacks.
+		- It stops being carried when it jumps, walks off the head, when the carrier disappears, or when the carrier pushes it into a ceiling.
+		- Heroes still walk through each other horizontally: only the top of the head is solid.
+	*/
+
 	public inline function isCarried() {
 		return carrier!=null;
 	}
 
 
-	/** TRUE if both players horizontally overlap enough to stand on each other **/
+	/** TRUE if both players horizontally overlap enough to stand on each other (with a 2px tolerance, so that a barely touching corner doesn't count) **/
 	inline function overlapsX(other:SamplePlayer) {
 		return M.fabs(attachX-other.attachX) < (wid+other.wid)*0.5 - 2;
 	}
@@ -110,7 +126,7 @@ class SamplePlayer extends Entity {
 	}
 
 
-	/** Return the player whose head we just reached while falling, if any **/
+	/** Return the player whose head we just reached while falling (feet above the head at the previous fixed frame, below or on it now), if any **/
 	function findHeadToLandOn() : Null<SamplePlayer> {
 		for(e in Entity.ALL) {
 			var other = Std.downcast(e, SamplePlayer);
@@ -126,6 +142,7 @@ class SamplePlayer extends Entity {
 	}
 
 
+	/** Land on `other` head: stop falling and stick to it **/
 	function startCarriedBy(other:SamplePlayer) {
 		carrier = other;
 		vBase.clearY();
@@ -141,7 +158,7 @@ class SamplePlayer extends Entity {
 	}
 
 
-	/** Put feet at given Y pixel coordinate, without collision checks **/
+	/** Put feet at given Y pixel coordinate (level pixels), without collision checks **/
 	function setFeetY(y:Float) {
 		cy = Std.int(y/Const.GRID);
 		yr = (y - cy*Const.GRID) / Const.GRID;

@@ -234,14 +234,26 @@ class App extends dn.Process {
 	}
 
 
-	/** Init game controller and default key bindings **/
+	/**
+		Init game controllers and default key bindings.
+
+		Local multiplayer input setup:
+		- each player (`PlayerInput`) owns a Controller with its own keyboard keys and its own gamepad,
+		- the `PadDispatcher` gives physical gamepads to players (first pad to press a button = player 1, etc.),
+		- `controller` (with `ca`) is a SHARED controller for menus, pause and debug keys: it reads all keyboard bindings
+		  and a virtual pad merging every connected gamepad, so any player can use the menus. Existing UI code is unchanged.
+	**/
 	function initController() {
-		// Extra DirectInput pads, unknown to the DirectX backend (SDL_GameControllerDB format)
+		// The DirectX backend silently ignores DirectInput pads missing from its internal mapping list (XInput pads always work).
+		// To support another pad: find its VID/PID (Windows device manager), then copy its line from SDL_GameControllerDB:
+		// https://github.com/mdqinc/SDL_GameControllerDB/blob/master/gamecontrollerdb.txt
+		// This must be done before any Controller/PadDispatcher creation.
 		PadDispatcher.addDirectInputMapping("030000004f04000015b3000000000000,Thrustmaster Dual Analog 4,a:b0,b:b2,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,leftshoulder:b4,leftstick:b10,lefttrigger:b5,leftx:a0,lefty:a1,rightshoulder:b6,rightstick:b11,righttrigger:b7,rightx:a2,righty:a3,start:b9,x:b1,y:b3,");
 
 		players = [ for(i in 0...Const.MAX_PLAYERS) new PlayerInput(i) ];
 		padDispatcher = new PadDispatcher([ for(p in players) p.controller ], ClaimOnPress); // first pad to press a button is player 1
 
+		// Shared controller: manual pad mode (autoPad=false), fed with the merged pad of all players
 		controller = dn.heaps.input.Controller.createFromAbstractEnum(GameAction, false);
 		controller.assignPad(padDispatcher.sharedPad);
 		ca = controller.createAccess();

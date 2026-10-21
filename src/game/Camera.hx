@@ -11,14 +11,9 @@ class Camera extends GameChildProcess {
 
 	var target : Null<Entity>;
 
-	/** If not empty, the camera tracks the center of these entities (instead of `target`) **/
+	/** If not empty, the camera tracks the average center of these entities (instead of `target`). Dead entities are ignored. **/
 	var targetGroup : Array<Entity> = [];
 
-	/** Actual camera focus X in level pixels (after bounds clamping) **/
-	public var focusX(get,never) : Float; inline function get_focusX() return clampedFocus.levelX;
-
-	/** Actual camera focus Y in level pixels (after bounds clamping) **/
-	public var focusY(get,never) : Float; inline function get_focusY() return clampedFocus.levelY;
 	public var targetOffX = 0.;
 	public var targetOffY = 0.;
 
@@ -175,8 +170,9 @@ class Camera extends GameChildProcess {
 	}
 
 	/**
-		Enable auto tracking of the center of a group of entities (eg. local multiplayer).
-		Replaces any single entity tracking.
+		Enable auto tracking of the average center of a group of entities (eg. local multiplayer).
+		Replaces any single entity tracking (`trackEntity()` replaces group tracking too).
+		Note: with `SplitScreen`, also disable `clampToLevelBounds` so that the group center stays at the screen center.
 	**/
 	public function trackGroup(group:Array<Entity>, immediate:Bool, speed=1.0) {
 		target = null;
@@ -191,6 +187,7 @@ class Camera extends GameChildProcess {
 		targetGroup = [];
 	}
 
+	/** TRUE if there is something to track: a single target, or at least one living entity of the group **/
 	inline function hasTrackingTarget() {
 		return target!=null || getLiveGroupCount()>0;
 	}
