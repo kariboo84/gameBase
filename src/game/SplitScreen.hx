@@ -4,7 +4,7 @@
 	- While every target is visible on the shared screen (ie. close enough to the group center), a single screen is displayed.
 	- 2 targets: "DBZ" dynamic split. The screen is cut by a line through its center, perpendicular to the direction between the targets.
 	  Each target stays on its own side. The transition from shared to split screen is seamless, and the line rotation is smoothed.
-	- 3+ targets: fixed areas (3: two on top + one at the bottom, 4: quarters). Each target always keeps the same area. Shared/split transitions are short fades, with a hysteresis to avoid flickering.
+	- 3+ targets: fixed quarters, each target always keeps the same one. With 3 targets, the 4th quarter shows a zoomed-out overview of the whole group. Shared/split transitions are short fades, with a hysteresis to avoid flickering.
 
 	The game scroller is rendered once per view into an offscreen texture (same pixel-perfect scale), then a shader composes the final image and draws the separators.
 	The main `Camera` should track the same group (`camera.trackGroup(...)`), WITHOUT level bounds clamping, so that the group center stays at the screen center.
@@ -18,6 +18,7 @@ class SplitScreen extends h2d.Drawable {
 	var textures : Array<h3d.mat.Texture> = [];
 	var viewOffsetsX : Array<Float> = [];
 	var viewOffsetsY : Array<Float> = [];
+	var viewScales : Array<Float> = [];
 	var viewCam : h2d.Camera;
 	var compositeShader : SplitScreenShader;
 
@@ -43,6 +44,12 @@ class SplitScreen extends h2d.Drawable {
 	public var fixedFadeS = 0.25;
 
 	public var lineColor : Col = White;
+
+	/** 3 targets: margin around the group in the overview quarter (ratio of the quarter size) **/
+	public var overviewMargin = 0.15;
+
+	/** 3 targets: inner edges color of the overview quarter **/
+	public var overviewEdgeColor : Col = 0x8c8c8c;
 
 	/** Inner edges of the separator, when a target has no specific color **/
 	public var borderColor : Col = Black;
@@ -155,6 +162,7 @@ class SplitScreen extends h2d.Drawable {
 		var placement = M.fclamp( (maxEllipseDist-1)/dynamicPlacementRatio, 0, 1 );
 		viewOffsetsX = [];
 		viewOffsetsY = [];
+		viewScales = [1, 1];
 		for(i in 0...2) {
 			var halfMiddle = smoothedAngle + (i==0 ? 0 : M.PI);
 			var ang = Math.atan2(relY[i], relX[i]);
@@ -199,13 +207,18 @@ class SplitScreen extends h2d.Drawable {
 		var count = relX.length;
 		viewOffsetsX = [];
 		viewOffsetsY = [];
+		viewScales = [];
 		for(i in 0...count) {
-			var area = getFixedArea(i, count, screenW, screenH);
+			var area = getFixedArea(i, screenW, screenH);
 			var areaCenterX = area.x + area.w*0.5 - screenW*0.5;
 			var areaCenterY = area.y + area.h*0.5 - screenH*0.5;
 			viewOffsetsX.push( M.round(relX[i] - areaCenterX) );
 			viewOffsetsY.push( M.round(relY[i] - areaCenterY) );
+			viewScales.push(1);
 		}
+
+		if( count==3 )
+			addOverviewView(screenW, screenH, relX, relY);
 
 		var s = compositeShader;
 		s.mode = 1;
@@ -214,12 +227,47 @@ class SplitScreen extends h2d.Drawable {
 	}
 
 
-	/** Fixed screen area of a target: 3 targets = two on top + one at the bottom, 4 targets = quarters **/
-	public static function getFixedArea(index:Int, count:Int, screenW:Float, screenH:Float) {
+	/**
+		3 targets: 4th quarter shows the whole group, zoomed out to fit.
+		The zoom keeps an integer game pixel size when possible (pixel perfect).
+	**/
+	function addOverviewView(screenW:Float, screenH:Float, relX:Array<Float>, relY:Array<Float>) {
+		var area = getFixedArea(3, screenW, screenH);
+
+		// Group bounds, on the shared screen (relative to its center)
+		var left = relX[0], right = relX[0], top = relY[0], bottom = relY[0];
+		for(i in 1...relX.length) {
+			left = M.fmin(left, relX[i]);
+			right = M.fmax(right, relX[i]);
+			top = M.fmin(top, relY[i]);
+			bottom = M.fmax(bottom, relY[i]);
+		}
+		var boundsW = M.fmax(right-left, 1);
+		var boundsH = M.fmax(bottom-top, 1);
+
+		// Zoom out to fit the bounds (with margins) in the quarter, never zoom in
+		var usableW = area.w * (1-overviewMargin*2);
+		var usableH = area.h * (1-overviewMargin*2);
+		var zoom = M.fmin( 1, M.fmin(usableW/boundsW, usableH/boundsH) );
+		var gamePixel = scroller.scaleX;
+		if( gamePixel*zoom>=1 )
+			zoom = Math.floor(gamePixel*zoom) / gamePixel;
+
+		// Transform: screenPos' = screenPos*zoom + offset, so that bounds center goes to the quarter center
+		var boundsCenterX = (left+right)*0.5 + screenW*0.5;
+		var boundsCenterY = (top+bottom)*0.5 + screenH*0.5;
+		var areaCenterX = area.x + area.w*0.5;
+		var areaCenterY = area.y + area.h*0.5;
+		viewScales.push(zoom);
+		viewOffsetsX.push( -M.round(areaCenterX - boundsCenterX*zoom) );
+		viewOffsetsY.push( -M.round(areaCenterY - boundsCenterY*zoom) );
+	}
+
+
+	/** Fixed screen area (quarter) of a target. With 3 targets, index 3 is the overview. **/
+	public static function getFixedArea(index:Int, screenW:Float, screenH:Float) {
 		var halfW = screenW*0.5;
 		var halfH = screenH*0.5;
-		if( count==3 && index==2 )
-			return { x:0., y:halfH, w:screenW, h:halfH };
 		return {
 			x: (index%2) * halfW,
 			y: Std.int(index/2) * halfH,
@@ -240,7 +288,7 @@ class SplitScreen extends h2d.Drawable {
 		s.borderWidth = scale;
 		s.lineColor.setColor(lineColor);
 		s.borderAlpha = borderAlpha;
-		var edgeColors = [ for(i in 0...MAX_VIEWS) i<colors.length ? colors[i] : borderColor ];
+		var edgeColors = [ for(i in 0...MAX_VIEWS) i<colors.length ? colors[i] : ( count==3 && i==3 ? overviewEdgeColor : borderColor ) ];
 		s.edgeColor0.setColor(edgeColors[0]);
 		s.edgeColor1.setColor(edgeColors[1]);
 		s.edgeColor2.setColor(edgeColors[2]);
@@ -296,11 +344,12 @@ class SplitScreen extends h2d.Drawable {
 			ctx.pushTarget(textures[i]);
 			ctx.engine.clear(ctx.engine.backgroundColor==null ? 0x0 : ctx.engine.backgroundColor, 1);
 
-			// Translate the whole scroller rendering by the view offset
-			viewCam.matA = 1;
+			// Transform the whole scroller rendering: scale (overview only) then offset
+			var zoom = i<viewScales.length ? viewScales[i] : 1.;
+			viewCam.matA = zoom;
 			viewCam.matB = 0;
 			viewCam.matC = 0;
-			viewCam.matD = 1;
+			viewCam.matD = zoom;
 			viewCam.absX = -viewOffsetsX[i];
 			viewCam.absY = -viewOffsetsY[i];
 			ctx.pushCamera(viewCam);
@@ -373,17 +422,10 @@ private class SplitScreenShader extends hxsl.Shader {
 				// Fixed areas
 				var right = p.x>=half.x;
 				var bottom = p.y>=half.y;
-				if( viewCount==3 ) {
-					if( bottom ) view = 2.;
-					else if( right ) view = 1.;
-					dist = abs(p.y-half.y);
-					if( !bottom ) dist = min(dist, abs(p.x-half.x));
-				}
-				else {
-					if( right ) view += 1.;
-					if( bottom ) view += 2.;
-					dist = min( abs(p.y-half.y), abs(p.x-half.x) );
-				}
+				// Fixed quarters (with 3 targets, the 4th is the overview)
+				if( right ) view += 1.;
+				if( bottom ) view += 2.;
+				dist = min( abs(p.y-half.y), abs(p.x-half.x) );
 			}
 
 			var col = textureColor;
