@@ -112,6 +112,10 @@ class App extends dn.Process {
 
 	/** Start game process **/
 	public function startGame() {
+		// Free all players slots: the first pad to press a button becomes player 1 again
+		for(slot in 0...padDispatcher.getSlotCount())
+			padDispatcher.unassignSlot(slot);
+
 		if( Game.exists() ) {
 			// Kill previous game instance first
 			Game.ME.destroy();
